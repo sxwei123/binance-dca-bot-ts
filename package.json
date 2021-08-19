@@ -1,0 +1,35 @@
+{
+  "name": "binance-dca-bot",
+  "description": "A DCA Bot for Binance exchange",
+  "version": "0.1.0",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "@types/lodash": "^4.14.172",
+    "@types/node": "^15.12.5",
+    "@types/node-cron": "^2.0.4",
+    "@typescript-eslint/eslint-plugin": "^4.13.0",
+    "@typescript-eslint/parser": "^4.13.0",
+    "eslint": "^7.17.0",
+    "eslint-config-prettier": "^7.1.0",
+    "eslint-plugin-import": "^2.22.1",
+    "prettier": "^2.3.2",
+    "ts-node": "^10.0.0",
+    "typescript": "^4.3.5"
+  },
+  "dependencies": {
+    "bignumber.js": "^9.0.1",
+    "binance-api-node": "https://github.com/sxwei123/binance-api-node",
+    "lodash": "^4.17.21",
+    "node-cron": "^3.0.0",
+    "reflect-metadata": "^0.1.13",
+    "sqlite3": "^5.0.2",
+    "typeorm": "^0.2.34"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "lint": "eslint --max-warnings=0 'src/**/*.ts'"
+  }
+}

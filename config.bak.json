@@ -1,0 +1,21 @@
+{
+  "binance": {
+    "paperTrading": false,
+    "apiKey": "YOUR_BINANCE_API_KEY",
+    "apiSecret": "YOUR_BINANCE_API_SECRET"
+  },
+  "dca": {
+    "pair": "ETHUSDT",
+    "strategy": "LONG",
+    "baseOrderSize": "20.0",
+    "safetyOrderSize": "40",
+    "startOrderType": "LIMIT",
+    "dealStartCondition": "ASAP",
+    "targetProfitPercentage": 1.0,
+    "maxSafetyTradesCount": 8,
+    "maxActiveSafetyTradesCount": 8,
+    "priceDeviationPercentage": 0.5,
+    "safetyOrderVolumeScale": 1.1,
+    "safetyOrderStepScale": 1.55
+  }
+}

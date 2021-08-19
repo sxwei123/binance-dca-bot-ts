@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "./dist",
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "preserveWatchOutput": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "sourceMap": true,
+    "target": "esnext",
+    "lib": ["esnext"],
+    "typeRoots": ["./node_modules/@types", "./types"]
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
