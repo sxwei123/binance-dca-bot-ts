@@ -1,5 +1,5 @@
 import BigNumber from "bignumber.js";
-import { OrderSide } from "binance-api-node";
+import { OrderSide, OrderStatus } from "binance-api-node";
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from "typeorm";
 
 import { Deal } from "./Deal";
@@ -56,9 +56,8 @@ export class Order {
   @Column({ length: 32, nullable: true })
   totalQuantity: string;
 
-  // CREATED, NEW, FILLED, PARTIALLY_FILLED, CANCELED, REJECTED, EXPIRED
   @Column({ length: 16 })
-  status: string;
+  status: "CREATED" | OrderStatus;
 
   @ManyToOne(() => Deal, (deal) => deal.orders)
   deal: Deal;

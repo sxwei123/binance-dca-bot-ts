@@ -26,3 +26,4 @@ If you enjoy DCA bots like the 3Commas' one and don't want to expose your Binanc
 - [ ] Add DB transaction lock
 - [ ] Close deal manually
 - [ ] Do paper trading with Binance real data
+- [ ] Monitor order status with REST apis

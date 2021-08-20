@@ -1,7 +1,6 @@
 import BigNumber from "bignumber.js";
 import {
   Binance,
-  OrderSide,
   Order as BinanceOrder,
   SymbolLotSizeFilter,
   SymbolPriceFilter,
@@ -15,7 +14,7 @@ import { BuyOrder, Order } from "./entity/Order";
 
 export interface DCABotConfig {
   pair: string;
-  strategy: string;
+  strategy: "LONG";
   baseOrderSize: string;
   safetyOrderSize: string;
   startOrderType: string;
@@ -122,22 +121,21 @@ export class DealManager {
     }
 
     let filledBuyVolume = new BigNumber(0);
-    const filledSellVolume = new BigNumber(0);
+    let filledSellVolume = new BigNumber(0);
     for (const order of deal.orders) {
       if (order.side === "BUY") {
         if (order.status === "NEW" && order.binanceOrderId) {
           await this.cancelOrder(order);
           order.status = "CANCELED";
           await this.orderRepo.save(order);
-        }
-        if (order.status === "FILLED") {
+        } else if (order.status === "FILLED") {
           filledBuyVolume = filledBuyVolume.plus(
             new BigNumber(order.filledPrice).multipliedBy(order.quantity),
           );
         }
       } else {
         if (order.status === "FILLED") {
-          filledSellVolume.plus(
+          filledSellVolume = filledSellVolume.plus(
             new BigNumber(order.price).multipliedBy(new BigNumber(order.quantity)),
           );
         }
@@ -174,22 +172,17 @@ export class DealManager {
     }
   }
 
-  async placeBinanceOrder(
-    clientOrderId: string,
-    side: OrderSide,
-    price: string,
-    quantity: string,
-  ): Promise<BinanceOrder> {
+  async placeBinanceOrder(order: Order): Promise<BinanceOrder> {
     const newOrder = await this.bClient.order({
-      newClientOrderId: clientOrderId,
-      side,
+      newClientOrderId: order.id,
+      side: order.side,
       symbol: this.config.pair,
       type: "LIMIT",
-      price,
-      quantity,
+      price: order.price,
+      quantity: order.quantity,
     });
 
-    console.log(`New ${side} order ${clientOrderId} has been placed, ${price} * ${quantity}`);
+    console.log(`${order.id}/${order.binanceOrderId}: New ${order.side} order has been placed`);
     return newOrder;
   }
 
@@ -208,7 +201,13 @@ export class DealManager {
 
     for (const bo of buyOrders) {
       if (!bo.binanceOrderId && bo.status === "CREATED") {
-        await this.placeBinanceOrder(`${bo.id}`, "BUY", bo.price, bo.quantity);
+        const bOrder = await this.placeBinanceOrder(bo);
+        bo.binanceOrderId = bOrder.orderId;
+        bo.status = bOrder.status;
+        if (bOrder.status === "FILLED") {
+          bo.filledPrice = bOrder.price;
+        }
+        await this.orderRepo.save(bo);
       }
     }
   }
@@ -234,44 +233,51 @@ export class DealManager {
     if (order.side === "BUY") {
       switch (orderStatus) {
         case "NEW":
-          order.binanceOrderId = orderId;
-          order.status = "NEW";
-          await this.orderRepo.save(order);
+          if (order.status === "CREATED" || order.status === "NEW") {
+            order.binanceOrderId = orderId;
+            order.status = "NEW";
+            await this.orderRepo.save(order);
+          }
           break;
 
         case "FILLED":
-          const existingSellOrder = deal.orders.find(
-            (o) => o.side === "SELL" && o.status === "NEW",
-          );
-          if (existingSellOrder) {
-            await this.cancelOrder(existingSellOrder);
+          if (
+            order.status === "CREATED" ||
+            order.status === "NEW" ||
+            order.status === "PARTIALLY_FILLED"
+          ) {
+            const existingSellOrder = deal.orders.find(
+              (o) => o.side === "SELL" && o.status === "NEW",
+            );
+            if (existingSellOrder) {
+              await this.cancelOrder(existingSellOrder);
+            }
+
+            order.binanceOrderId = orderId;
+            order.status = "FILLED";
+            order.filledPrice = price;
+            await this.orderRepo.save(order);
+            // Cancel existing sell order (if any)
+            // and create a new take-profit order
+
+            let newSellOrder = new Order();
+            newSellOrder.deal = deal;
+            newSellOrder.side = "SELL";
+            newSellOrder.status = "CREATED";
+            newSellOrder.price = order.exitPrice;
+            newSellOrder.quantity = order.totalQuantity;
+            newSellOrder.volume = new BigNumber(order.exitPrice)
+              .multipliedBy(order.totalQuantity)
+              .toFixed();
+            newSellOrder.sequence = 1000 + order.sequence;
+            newSellOrder = await this.orderRepo.save(newSellOrder);
+
+            const bSellOrder = await this.placeBinanceOrder(newSellOrder);
+            newSellOrder.status = "NEW";
+            newSellOrder.binanceOrderId = bSellOrder.orderId;
+            newSellOrder = await this.orderRepo.save(newSellOrder);
           }
 
-          order.binanceOrderId = orderId;
-          order.status = "FILLED";
-          order.filledPrice = price;
-          await this.orderRepo.save(order);
-          // Cancel existing sell order (if any)
-          // and create a new take-profit order
-
-          let newSellOrder = new Order();
-          newSellOrder.deal = deal;
-          newSellOrder.side = "SELL";
-          newSellOrder.status = "CREATED";
-          newSellOrder.price = order.exitPrice;
-          newSellOrder.quantity = order.totalQuantity;
-          newSellOrder.sequence = 1000 + order.sequence;
-          newSellOrder = await this.orderRepo.save(newSellOrder);
-
-          const bSellOrder = await this.placeBinanceOrder(
-            newSellOrder.id,
-            "SELL",
-            newSellOrder.price,
-            newSellOrder.quantity,
-          );
-          newSellOrder.status = "NEW";
-          newSellOrder.binanceOrderId = bSellOrder.orderId;
-          newSellOrder = await this.orderRepo.save(newSellOrder);
           break;
 
         case "PARTIALLY_FILLED":

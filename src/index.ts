@@ -26,6 +26,8 @@ const run = async () => {
 
   const bClient = getBinanceClient(config.binance);
 
+  console.log(`Trading on pair ${config.dca.pair}`);
+
   const exchangeInfo = await bClient.exchangeInfo();
   const symbol = exchangeInfo.symbols.find((s) => s.symbol === config.dca.pair);
   if (!symbol) {
@@ -53,7 +55,9 @@ const run = async () => {
 
   await bClient.ws.user((evt) => {
     if (isExecutionReport(evt)) {
-      console.table([evt], ["symbol", "orderId", "side", "orderStatus", "price", "quantity"]);
+      console.log(
+        `${evt.originalClientOrderId}/${evt.orderId}: ${evt.side} order status updated to ${evt.orderStatus}. Price: ${evt.price}, Amount: ${evt.quantity}`,
+      );
       orderManager.refreshDealOnOrderUpdate(evt);
     }
   });

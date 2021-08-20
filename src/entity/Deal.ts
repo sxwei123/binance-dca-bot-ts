@@ -11,9 +11,8 @@ export class Deal {
   @OneToMany(() => Order, (order) => order.deal, { eager: true })
   orders: Order[];
 
-  // "CREATED", "ACTIVE", "CLOSED", "CANCELED"
   @Column({ length: 16 })
-  status: string;
+  status: "CREATED" | "ACTIVE" | "CLOSED" | "CANCELED";
 
   @Column({ type: "datetime" })
   startAt: Date;
@@ -33,9 +32,8 @@ export class Deal {
   @Column({ length: 32 })
   safetyOrderSize: string;
 
-  // LONG or SHORT
   @Column({ length: 8 })
-  strategy: string;
+  strategy: "LONG";
 
   // LIMIT or MARKET
   @Column({ length: 16 })
