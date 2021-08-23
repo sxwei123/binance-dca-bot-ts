@@ -6,6 +6,9 @@ import {
   SymbolPriceFilter,
   ExecutionReport,
   Symbol as BinanceSymbol,
+  OrderSide,
+  OrderStatus,
+  OrderType,
 } from "binance-api-node";
 import { last, sortBy } from "lodash";
 import { Repository } from "typeorm";
@@ -102,7 +105,7 @@ export class DealManager {
       order.sequence = buyOrder.sequence;
       order.volume = buyOrder.volume.toFixed();
       order.deviation = buyOrder.deviation.toFixed();
-      order.side = "BUY";
+      order.side = OrderSide.BUY;
       order.price = buyOrder.price.toFixed();
       order.quantity = buyOrder.quantity.toFixed();
       order.totalQuantity = buyOrder.totalQuantity.toFixed();
@@ -129,7 +132,7 @@ export class DealManager {
       if (order.side === "BUY") {
         if (order.status === "NEW" && order.binanceOrderId) {
           await this.cancelOrder(order);
-          order.status = "CANCELED";
+          order.status = OrderStatus.CANCELED;
           await this.orderRepo.save(order);
         } else if (order.status === "FILLED") {
           filledBuyVolume = filledBuyVolume.plus(
@@ -181,7 +184,7 @@ export class DealManager {
         newClientOrderId: order.id,
         side: order.side,
         symbol: this.config.pair,
-        type: "LIMIT",
+        type: OrderType.LIMIT,
         price: order.price,
         quantity: order.quantity,
       });
@@ -236,7 +239,7 @@ export class DealManager {
         case "NEW":
           if (order.status === "CREATED" || order.status === "NEW") {
             order.binanceOrderId = orderId;
-            order.status = "NEW";
+            order.status = OrderStatus.NEW;
             await this.orderRepo.save(order);
           }
           break;
@@ -255,7 +258,7 @@ export class DealManager {
             }
 
             order.binanceOrderId = orderId;
-            order.status = "FILLED";
+            order.status = OrderStatus.FILLED;
             order.filledPrice = price;
             await this.orderRepo.save(order);
             // Cancel existing sell order (if any)
@@ -263,7 +266,7 @@ export class DealManager {
 
             let newSellOrder = new Order();
             newSellOrder.deal = deal;
-            newSellOrder.side = "SELL";
+            newSellOrder.side = OrderSide.SELL;
             newSellOrder.status = "CREATED";
             newSellOrder.price = order.exitPrice;
             newSellOrder.quantity = order.totalQuantity;
@@ -275,7 +278,7 @@ export class DealManager {
 
             const bSellOrder = await this.placeBinanceOrder(newSellOrder);
             if (bSellOrder) {
-              newSellOrder.status = "NEW";
+              newSellOrder.status = OrderStatus.NEW;
               newSellOrder.binanceOrderId = bSellOrder.orderId;
               newSellOrder = await this.orderRepo.save(newSellOrder);
             }

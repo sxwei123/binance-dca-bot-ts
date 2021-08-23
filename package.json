@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "bignumber.js": "^9.0.1",
-    "binance-api-node": "https://github.com/sxwei123/binance-api-node",
+    "binance-api-node": "^0.11.11",
     "delay": "^5.0.0",
     "lodash": "^4.17.21",
     "node-cron": "^3.0.0",
