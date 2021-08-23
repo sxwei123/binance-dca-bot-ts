@@ -5,7 +5,9 @@ import {
   SymbolPriceFilter,
   UserDataStreamEvent,
 } from "binance-api-node";
+import delay from "delay";
 import cron from "node-cron";
+import PQueue from "p-queue";
 import { createConnection } from "typeorm";
 
 import config from "../config.json";
@@ -14,6 +16,7 @@ import { Deal } from "./entity/Deal";
 import { Order } from "./entity/Order";
 import { getBinanceClient } from "./exchangeAPI/binance";
 import { printDealTable } from "./utils";
+import { logger } from "./logger";
 
 const isExecutionReport = (userEvt: UserDataStreamEvent): userEvt is ExecutionReport => {
   return `${userEvt.eventType}` === "executionReport";
@@ -26,7 +29,7 @@ const run = async () => {
 
   const bClient = getBinanceClient(config.binance);
 
-  console.log(`Trading on pair ${config.dca.pair}`);
+  logger.info(`Trading on pair ${config.dca.pair}`);
 
   const exchangeInfo = await bClient.exchangeInfo();
   const symbol = exchangeInfo.symbols.find((s) => s.symbol === config.dca.pair);
@@ -51,16 +54,26 @@ const run = async () => {
     dealRepo,
     orderRepo,
     bClient,
+    symbol,
   );
 
+  const orderUpdateQueue = new PQueue({ concurrency: 1 });
   await bClient.ws.user((evt) => {
     if (isExecutionReport(evt)) {
-      console.log(
-        `${evt.originalClientOrderId}/${evt.orderId}: ${evt.side} order status updated to ${evt.orderStatus}. Price: ${evt.price}, Amount: ${evt.quantity}`,
-      );
-      orderManager.refreshDealOnOrderUpdate(evt);
+      orderUpdateQueue.add(() => {
+        logger.info(
+          `${evt.originalClientOrderId || evt.newClientOrderId}/${evt.orderId}: ${
+            evt.side
+          } order status updated to ${evt.orderStatus}. Price: ${evt.price}, Amount: ${
+            evt.quantity
+          }`,
+        );
+        orderManager.refreshDealOnOrderUpdate(evt);
+      });
     }
   });
+
+  delay(2000);
 
   let deal = await orderManager.startOrContinueDeal();
   printDealTable(deal);
@@ -68,10 +81,11 @@ const run = async () => {
   cron.schedule("* * * * *", async () => {
     const newDeal = await orderManager.startOrContinueDeal();
     if (deal.id !== newDeal.id) {
-      console.log("New deal created!");
+      logger.info("New deal created!");
       printDealTable(newDeal);
       deal = newDeal;
     }
+    logger.info(`Active deal ${deal.id} on ${deal.pair}`);
   });
 };
 

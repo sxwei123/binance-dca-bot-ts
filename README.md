@@ -16,7 +16,7 @@ If you enjoy DCA bots like the 3Commas' one and don't want to expose your Binanc
 
 ## TODOs
 
-- [ ] Add proper logger with timestamp
+- [x] Add proper logger with timestamp
 - [x] Config eslint and prettier
 - [ ] implement maxActiveSafetyTradesCount
 - [x] Fix ugly type casts (https://github.com/Ashlar/binance-api-node/pull/487)

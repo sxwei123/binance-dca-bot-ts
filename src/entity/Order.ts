@@ -12,6 +12,7 @@ export interface BuyOrder {
   averagePrice: BigNumber;
   quantity: BigNumber;
   totalQuantity: BigNumber;
+  totalVolume: BigNumber;
   exitPrice: BigNumber;
 }
 

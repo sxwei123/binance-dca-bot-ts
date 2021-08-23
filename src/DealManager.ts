@@ -5,12 +5,14 @@ import {
   SymbolLotSizeFilter,
   SymbolPriceFilter,
   ExecutionReport,
+  Symbol as BinanceSymbol,
 } from "binance-api-node";
 import { last, sortBy } from "lodash";
 import { Repository } from "typeorm";
 
 import { Deal } from "./entity/Deal";
 import { BuyOrder, Order } from "./entity/Order";
+import { logger } from "./logger";
 
 export interface DCABotConfig {
   pair: string;
@@ -55,6 +57,7 @@ export class DealManager {
     private readonly dealRepo: Repository<Deal>,
     private readonly orderRepo: Repository<Order>,
     private readonly bClient: Binance,
+    private readonly symbol: BinanceSymbol,
   ) {}
 
   async startOrContinueDeal(): Promise<Deal> {
@@ -62,7 +65,7 @@ export class DealManager {
     if (dealFromDB) {
       this.currentDeal = dealFromDB;
     } else {
-      console.log("No active deal, create a new deal");
+      logger.info("No active deal, create a new deal");
       const orders = await this.calculateBuyOrders();
       this.currentDeal = await this.createDeal(orders);
       await this.activateDeal();
@@ -116,7 +119,7 @@ export class DealManager {
   async closeDeal(dealId: number): Promise<void> {
     const deal = await this.dealRepo.findOne(dealId);
     if (!deal) {
-      console.error(`Deal ${dealId} not found`);
+      logger.error(`Deal ${dealId} not found`);
       return;
     }
 
@@ -147,8 +150,8 @@ export class DealManager {
     deal.endAt = new Date();
     deal.profit = profit;
     await this.dealRepo.save(deal);
-    console.log(deal);
-    console.log(`Deal ${deal.id} closed, profit: ${profit}`);
+    logger.info(deal);
+    logger.info(`Deal ${deal.id} closed, profit: ${profit}`);
   }
 
   async getOrderDetail(binanceOrderId: number): Promise<BinanceOrder> {
@@ -164,26 +167,30 @@ export class DealManager {
         symbol: this.config.pair,
         orderId: order.binanceOrderId,
       });
-      console.log(
+      logger.info(
         `${result.side} order ${result.orderId} has been cancelled, status ${result.status}`,
       );
     } catch (err) {
-      console.error("Failed to cancel order", order, err);
+      logger.error("Failed to cancel order", order, err);
     }
   }
 
-  async placeBinanceOrder(order: Order): Promise<BinanceOrder> {
-    const newOrder = await this.bClient.order({
-      newClientOrderId: order.id,
-      side: order.side,
-      symbol: this.config.pair,
-      type: "LIMIT",
-      price: order.price,
-      quantity: order.quantity,
-    });
+  async placeBinanceOrder(order: Order): Promise<BinanceOrder | undefined> {
+    try {
+      const newOrder = await this.bClient.order({
+        newClientOrderId: order.id,
+        side: order.side,
+        symbol: this.config.pair,
+        type: "LIMIT",
+        price: order.price,
+        quantity: order.quantity,
+      });
 
-    console.log(`${order.id}/${order.binanceOrderId}: New ${order.side} order has been placed`);
-    return newOrder;
+      logger.info(`${order.id}/${order.binanceOrderId}: New ${order.side} order has been placed`);
+      return newOrder;
+    } catch (err) {
+      logger.error("Failed to place order", order, err);
+    }
   }
 
   async placeBuyOrders(dealId: number): Promise<void> {
@@ -201,13 +208,7 @@ export class DealManager {
 
     for (const bo of buyOrders) {
       if (!bo.binanceOrderId && bo.status === "CREATED") {
-        const bOrder = await this.placeBinanceOrder(bo);
-        bo.binanceOrderId = bOrder.orderId;
-        bo.status = bOrder.status;
-        if (bOrder.status === "FILLED") {
-          bo.filledPrice = bOrder.price;
-        }
-        await this.orderRepo.save(bo);
+        await this.placeBinanceOrder(bo);
       }
     }
   }
@@ -221,12 +222,12 @@ export class DealManager {
       relations: ["deal"],
     });
     if (!order) {
-      console.log(`Order ${clientOrderId} not found`);
+      logger.info(`Order ${clientOrderId} not found`);
       return;
     }
     const deal = await this.dealRepo.findOne(order.deal.id);
     if (!deal || deal.status !== "ACTIVE") {
-      console.warn(`Invalid deal ${order.deal.id}`);
+      logger.warn(`Invalid deal ${order.deal.id}`);
       return;
     }
 
@@ -273,9 +274,11 @@ export class DealManager {
             newSellOrder = await this.orderRepo.save(newSellOrder);
 
             const bSellOrder = await this.placeBinanceOrder(newSellOrder);
-            newSellOrder.status = "NEW";
-            newSellOrder.binanceOrderId = bSellOrder.orderId;
-            newSellOrder = await this.orderRepo.save(newSellOrder);
+            if (bSellOrder) {
+              newSellOrder.status = "NEW";
+              newSellOrder.binanceOrderId = bSellOrder.orderId;
+              newSellOrder = await this.orderRepo.save(newSellOrder);
+            }
           }
 
           break;
@@ -289,7 +292,7 @@ export class DealManager {
           break;
 
         default:
-          console.error("Invalid order status", orderStatus);
+          logger.error("Invalid order status", orderStatus);
       }
     } else {
       order.status = orderStatus;
@@ -319,7 +322,7 @@ export class DealManager {
   async calculateBuyOrders(): Promise<BuyOrder[]> {
     const prices = await this.bClient.prices();
     const currentPriceStr = prices[this.config.pair];
-    console.log(`Current price for ${this.config.pair} is ${currentPriceStr}`);
+    logger.info(`Current price for ${this.config.pair} is ${currentPriceStr}`);
 
     const currentPrice = this.applyPriceFilter(new BigNumber(currentPriceStr));
 
@@ -347,6 +350,7 @@ export class DealManager {
           averagePrice: currentPrice,
           quantity,
           totalQuantity: quantity,
+          totalVolume: currentPrice.multipliedBy(quantity),
           exitPrice: this.applyPriceFilter(currentPrice.multipliedBy(targetProfit.plus(1))),
         });
       } else {
@@ -374,12 +378,31 @@ export class DealManager {
           price,
           quantity,
           totalQuantity,
+          totalVolume,
           averagePrice,
           exitPrice: this.applyPriceFilter(averagePrice.multipliedBy(targetProfit.plus(1))),
         });
       }
     }
 
+    const lastBuyOrder = last(orders);
+    if (!lastBuyOrder) {
+      throw new Error("Must have at least one buy order");
+    }
+    const accountInfo = await this.bClient.accountInfo();
+    const balance = accountInfo.balances.find((b) => b.asset === this.symbol.quoteAsset);
+    if (!balance) {
+      throw new Error(`Quote asset ${this.symbol.quoteAsset} is not supported`);
+    }
+    if (lastBuyOrder.totalVolume.isGreaterThan(new BigNumber(balance.free))) {
+      throw new Error(
+        `Not enough ${
+          this.symbol.quoteAsset
+        } balance to support this deal. ${lastBuyOrder.totalVolume.toFixed()} is needed, only ${
+          balance.free
+        } available in the wallet`,
+      );
+    }
     return orders;
   }
 }
