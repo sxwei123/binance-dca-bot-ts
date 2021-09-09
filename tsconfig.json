@@ -1,23 +1,21 @@
 {
   "compilerOptions": {
-    "skipLibCheck": true,
-    "noImplicitAny": false,
     "esModuleInterop": true,
     "module": "commonjs",
-    "moduleResolution": "node",
-    "outDir": "./dist",
-    "resolveJsonModule": true,
-    "forceConsistentCasingInFileNames": true,
+    "target": "es2018",
     "preserveWatchOutput": true,
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "strict": true,
-    "strictPropertyInitialization": false,
+    "outDir": "dist",
     "sourceMap": true,
-    "target": "esnext",
-    "lib": ["esnext"],
-    "typeRoots": ["./node_modules/@types", "./types"]
+    "strict": true,
+    "noUnusedLocals": false,
+    "skipLibCheck": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "allowSyntheticDefaultImports": true,
+    "strictPropertyInitialization": false,
+    "lib": ["es2018", "esnext"],
+    "typeRoots": ["./types", "node_modules/@types"]
   },
   "include": ["src"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "src/integration-tests"]
 }

@@ -6,11 +6,12 @@ import {
   UserDataStreamEvent,
 } from "binance-api-node";
 import delay from "delay";
+import fse from "fs-extra";
 import cron from "node-cron";
+import path from "path";
 import PQueue from "p-queue";
 import { createConnection } from "typeorm";
 
-import config from "../config.json";
 import { DCABotConfig, DealManager } from "./DealManager";
 import { Deal } from "./entity/Deal";
 import { Order } from "./entity/Order";
@@ -23,6 +24,7 @@ const isExecutionReport = (userEvt: UserDataStreamEvent): userEvt is ExecutionRe
 };
 
 const run = async () => {
+  const config = await fse.readJSON(path.join(__dirname, "../config.json"));
   const dbConn = await createConnection("default");
   const dealRepo = dbConn.getRepository(Deal);
   const orderRepo = dbConn.getRepository(Order);
@@ -61,13 +63,6 @@ const run = async () => {
   await bClient.ws.user((evt) => {
     if (isExecutionReport(evt)) {
       orderUpdateQueue.add(() => {
-        logger.info(
-          `${evt.originalClientOrderId || evt.newClientOrderId}/${evt.orderId}: ${
-            evt.side
-          } order status updated to ${evt.orderStatus}. Price: ${evt.price}, Amount: ${
-            evt.quantity
-          }`,
-        );
         orderManager.refreshDealOnOrderUpdate(evt);
       });
     }

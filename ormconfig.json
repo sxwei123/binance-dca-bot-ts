@@ -3,7 +3,7 @@
     "name": "default",
     "type": "sqlite",
     "database": "./data/db.sqlite",
-    "entities": ["**/entity/*.ts"],
+    "entities": ["dist/**/entity/*.js"],
     "synchronize": true
   }
 ]

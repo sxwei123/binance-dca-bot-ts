@@ -10,6 +10,7 @@ import {
   OrderStatus,
   OrderType,
 } from "binance-api-node";
+import delay from "delay";
 import { last, sortBy } from "lodash";
 import { Repository } from "typeorm";
 
@@ -50,6 +51,101 @@ const applyFilter = (
     : revisedAmount;
 };
 
+export const applyPriceFilter = (price: BigNumber, priceFilter: SymbolPriceFilter): BigNumber => {
+  const { minPrice, maxPrice, tickSize } = priceFilter;
+  return applyFilter(
+    price,
+    new BigNumber(maxPrice),
+    new BigNumber(minPrice),
+    new BigNumber(tickSize),
+  );
+};
+
+export const applyQuantityFilter = (qty: BigNumber, lotFilter: SymbolLotSizeFilter): BigNumber => {
+  const { minQty, maxQty, stepSize } = lotFilter;
+  return applyFilter(qty, new BigNumber(maxQty), new BigNumber(minQty), new BigNumber(stepSize));
+};
+
+export const calculateBuyOrders = (
+  currentPrice: BigNumber,
+  config: DCABotConfig,
+  filters: {
+    priceFilter: SymbolPriceFilter;
+    lotFilter: SymbolLotSizeFilter;
+  },
+): BuyOrder[] => {
+  const baseOrderSize = new BigNumber(config.baseOrderSize);
+  const safetyOrderSize = new BigNumber(config.safetyOrderSize);
+  const targetProfit = new BigNumber(config.targetProfitPercentage).dividedBy(100);
+  const priceDeviation = new BigNumber(config.priceDeviationPercentage).dividedBy(100);
+  const { maxSafetyTradesCount } = config;
+  const safetyOrderVolumeScale = new BigNumber(config.safetyOrderVolumeScale);
+  const safetyOrderStepScale = new BigNumber(config.safetyOrderStepScale);
+
+  const orders: BuyOrder[] = [];
+  for (
+    let safeTypeTradeCount = 0;
+    safeTypeTradeCount <= maxSafetyTradesCount;
+    safeTypeTradeCount++
+  ) {
+    if (!safeTypeTradeCount) {
+      const quantity = applyQuantityFilter(
+        baseOrderSize.dividedBy(currentPrice),
+        filters.lotFilter,
+      );
+      orders.push({
+        sequence: 0,
+        deviation: new BigNumber(0),
+        volume: currentPrice.multipliedBy(quantity),
+        price: currentPrice,
+        averagePrice: currentPrice,
+        quantity,
+        totalQuantity: quantity,
+        totalVolume: currentPrice.multipliedBy(quantity),
+        exitPrice: applyPriceFilter(
+          currentPrice.multipliedBy(targetProfit.plus(1)),
+          filters.priceFilter,
+        ),
+      });
+    } else {
+      const volume = safetyOrderSize.multipliedBy(
+        safetyOrderVolumeScale.exponentiatedBy(safeTypeTradeCount - 1),
+      );
+      const deviation = priceDeviation.multipliedBy(
+        new BigNumber(1)
+          .minus(safetyOrderStepScale.exponentiatedBy(safeTypeTradeCount))
+          .dividedBy(new BigNumber(1).minus(safetyOrderStepScale)),
+      );
+      const price = applyPriceFilter(
+        currentPrice.multipliedBy(new BigNumber(1).minus(deviation)),
+        filters.priceFilter,
+      );
+      const quantity = applyQuantityFilter(volume.dividedBy(price), filters.lotFilter);
+      const revisedVolume = price.multipliedBy(quantity);
+      const totalVolume = BigNumber.sum(...[...orders.map((o) => o.volume), revisedVolume]);
+      const totalQuantity = quantity.plus(last(orders)?.totalQuantity ?? 0);
+      const averagePrice = totalVolume.dividedBy(totalQuantity);
+
+      orders.push({
+        sequence: safeTypeTradeCount,
+        deviation: deviation.multipliedBy(100),
+        volume: revisedVolume,
+        price,
+        quantity,
+        totalQuantity,
+        totalVolume,
+        averagePrice,
+        exitPrice: applyPriceFilter(
+          averagePrice.multipliedBy(targetProfit.plus(1)),
+          filters.priceFilter,
+        ),
+      });
+    }
+  }
+
+  return orders;
+};
+
 export class DealManager {
   private currentDeal: Deal | undefined;
 
@@ -67,9 +163,21 @@ export class DealManager {
     const dealFromDB = await this.getActiveDeal();
     if (dealFromDB) {
       this.currentDeal = dealFromDB;
+      for (const order of dealFromDB.orders) {
+        if (order.status === OrderStatus.NEW && order.binanceOrderId) {
+          const bOrderDetail = await this.getOrderDetail(order.binanceOrderId);
+          if (bOrderDetail.status !== OrderStatus.NEW) {
+            order.status = bOrderDetail.status;
+            if (bOrderDetail.status === OrderStatus.FILLED) {
+              order.filledPrice = bOrderDetail.price;
+            }
+            await this.orderRepo.save(order);
+          }
+        }
+      }
     } else {
       logger.info("No active deal, create a new deal");
-      const orders = await this.calculateBuyOrders();
+      const orders = await this.calBuyOrdersBasedOnCurrentPrice();
       this.currentDeal = await this.createDeal(orders);
       await this.activateDeal();
     }
@@ -120,7 +228,23 @@ export class DealManager {
   }
 
   async closeDeal(dealId: number): Promise<void> {
-    const deal = await this.dealRepo.findOne(dealId);
+    let deal = await this.dealRepo.findOne(dealId);
+    if (!deal) {
+      logger.error(`Deal ${dealId} not found`);
+      return;
+    }
+
+    // cancel all unfilled buy orders
+    for (const order of deal.orders) {
+      if (order.side === OrderSide.BUY && order.status === "NEW" && order.binanceOrderId) {
+        await this.cancelOrder(order);
+      }
+    }
+
+    while (deal?.orders.find((o) => o.status === OrderStatus.NEW)) {
+      await delay(2000);
+      deal = await this.dealRepo.findOne(dealId);
+    }
     if (!deal) {
       logger.error(`Deal ${dealId} not found`);
       return;
@@ -129,12 +253,8 @@ export class DealManager {
     let filledBuyVolume = new BigNumber(0);
     let filledSellVolume = new BigNumber(0);
     for (const order of deal.orders) {
-      if (order.side === "BUY") {
-        if (order.status === "NEW" && order.binanceOrderId) {
-          await this.cancelOrder(order);
-          order.status = OrderStatus.CANCELED;
-          await this.orderRepo.save(order);
-        } else if (order.status === "FILLED") {
+      if (order.side === OrderSide.BUY) {
+        if (order.status === "FILLED") {
           filledBuyVolume = filledBuyVolume.plus(
             new BigNumber(order.filledPrice).multipliedBy(order.quantity),
           );
@@ -229,7 +349,7 @@ export class DealManager {
       return;
     }
     const deal = await this.dealRepo.findOne(order.deal.id);
-    if (!deal || deal.status !== "ACTIVE") {
+    if (!deal) {
       logger.warn(`Invalid deal ${order.deal.id}`);
       return;
     }
@@ -237,10 +357,13 @@ export class DealManager {
     if (order.side === "BUY") {
       switch (orderStatus) {
         case "NEW":
-          if (order.status === "CREATED" || order.status === "NEW") {
+          if (order.status === "CREATED") {
             order.binanceOrderId = orderId;
             order.status = OrderStatus.NEW;
             await this.orderRepo.save(order);
+            logger.info(
+              `${clientOrderId}/${order.binanceOrderId}: NEW buy order. Price: ${price}, Amount: ${order.quantity}`,
+            );
           }
           break;
 
@@ -261,6 +384,9 @@ export class DealManager {
             order.status = OrderStatus.FILLED;
             order.filledPrice = price;
             await this.orderRepo.save(order);
+            logger.info(
+              `${clientOrderId}/${order.binanceOrderId}: Buy order ${order.side} has been FILLED. Price: ${price}, Amount: ${order.quantity}`,
+            );
             // Cancel existing sell order (if any)
             // and create a new take-profit order
 
@@ -292,6 +418,9 @@ export class DealManager {
         case "EXPIRED":
           order.status = orderStatus;
           await this.orderRepo.save(order);
+          logger.info(
+            `${clientOrderId}/${order.binanceOrderId}: Buy order is ${orderStatus}. Price: ${price}, Amount: ${order.quantity}`,
+          );
           break;
 
         default:
@@ -301,94 +430,27 @@ export class DealManager {
       order.status = orderStatus;
       order.binanceOrderId = orderId;
       await this.orderRepo.save(order);
+      logger.info(
+        `${clientOrderId}/${order.binanceOrderId}: Sell order is ${orderStatus}. Price: ${price}, Amount: ${order.quantity}`,
+      );
+
       if (orderStatus === "FILLED") {
         await this.closeDeal(deal.id);
       }
     }
   }
 
-  private applyPriceFilter(price: BigNumber): BigNumber {
-    const { minPrice, maxPrice, tickSize } = this.priceFilter;
-    return applyFilter(
-      price,
-      new BigNumber(maxPrice),
-      new BigNumber(minPrice),
-      new BigNumber(tickSize),
-    );
-  }
-
-  private applyQuantityFilter(qty: BigNumber): BigNumber {
-    const { minQty, maxQty, stepSize } = this.lotFilter;
-    return applyFilter(qty, new BigNumber(maxQty), new BigNumber(minQty), new BigNumber(stepSize));
-  }
-
-  async calculateBuyOrders(): Promise<BuyOrder[]> {
+  private async calBuyOrdersBasedOnCurrentPrice(): Promise<BuyOrder[]> {
     const prices = await this.bClient.prices();
     const currentPriceStr = prices[this.config.pair];
     logger.info(`Current price for ${this.config.pair} is ${currentPriceStr}`);
 
-    const currentPrice = this.applyPriceFilter(new BigNumber(currentPriceStr));
+    const buyOrders = calculateBuyOrders(new BigNumber(currentPriceStr), this.config, {
+      priceFilter: this.priceFilter,
+      lotFilter: this.lotFilter,
+    });
 
-    const baseOrderSize = new BigNumber(this.config.baseOrderSize);
-    const safetyOrderSize = new BigNumber(this.config.safetyOrderSize);
-    const targetProfit = new BigNumber(this.config.targetProfitPercentage).dividedBy(100);
-    const priceDeviation = new BigNumber(this.config.priceDeviationPercentage).dividedBy(100);
-    const { maxSafetyTradesCount } = this.config;
-    const safetyOrderVolumeScale = new BigNumber(this.config.safetyOrderVolumeScale);
-    const safetyOrderStepScale = new BigNumber(this.config.safetyOrderStepScale);
-
-    const orders: BuyOrder[] = [];
-    for (
-      let safeTypeTradeCount = 0;
-      safeTypeTradeCount <= maxSafetyTradesCount;
-      safeTypeTradeCount++
-    ) {
-      if (!safeTypeTradeCount) {
-        const quantity = this.applyQuantityFilter(baseOrderSize.dividedBy(currentPrice));
-        orders.push({
-          sequence: 0,
-          deviation: new BigNumber(0),
-          volume: currentPrice.multipliedBy(quantity),
-          price: currentPrice,
-          averagePrice: currentPrice,
-          quantity,
-          totalQuantity: quantity,
-          totalVolume: currentPrice.multipliedBy(quantity),
-          exitPrice: this.applyPriceFilter(currentPrice.multipliedBy(targetProfit.plus(1))),
-        });
-      } else {
-        const volume = safetyOrderSize.multipliedBy(
-          safetyOrderVolumeScale.exponentiatedBy(safeTypeTradeCount - 1),
-        );
-        const deviation = priceDeviation.multipliedBy(
-          new BigNumber(1)
-            .minus(safetyOrderStepScale.exponentiatedBy(safeTypeTradeCount))
-            .dividedBy(new BigNumber(1).minus(safetyOrderStepScale)),
-        );
-        const price = this.applyPriceFilter(
-          currentPrice.multipliedBy(new BigNumber(1).minus(deviation)),
-        );
-        const quantity = this.applyQuantityFilter(volume.dividedBy(price));
-        const revisedVolume = price.multipliedBy(quantity);
-        const totalVolume = BigNumber.sum(...[...orders.map((o) => o.volume), revisedVolume]);
-        const totalQuantity = quantity.plus(last(orders)?.totalQuantity ?? 0);
-        const averagePrice = totalVolume.dividedBy(totalQuantity);
-
-        orders.push({
-          sequence: safeTypeTradeCount,
-          deviation: deviation.multipliedBy(100),
-          volume: revisedVolume,
-          price,
-          quantity,
-          totalQuantity,
-          totalVolume,
-          averagePrice,
-          exitPrice: this.applyPriceFilter(averagePrice.multipliedBy(targetProfit.plus(1))),
-        });
-      }
-    }
-
-    const lastBuyOrder = last(orders);
+    const lastBuyOrder = last(buyOrders);
     if (!lastBuyOrder) {
       throw new Error("Must have at least one buy order");
     }
@@ -406,6 +468,6 @@ export class DealManager {
         } available in the wallet`,
       );
     }
-    return orders;
+    return buyOrders;
   }
 }

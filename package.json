@@ -6,6 +6,7 @@
   "license": "MIT",
   "private": true,
   "devDependencies": {
+    "@types/fs-extra": "^9.0.12",
     "@types/lodash": "^4.14.172",
     "@types/node": "^15.12.5",
     "@types/node-cron": "^2.0.4",
@@ -14,14 +15,16 @@
     "eslint": "^7.17.0",
     "eslint-config-prettier": "^7.1.0",
     "eslint-plugin-import": "^2.22.1",
+    "pm2": "^5.1.1",
     "prettier": "^2.3.2",
     "ts-node": "^10.0.0",
-    "typescript": "^4.3.5"
+    "typescript": "^3.7.2"
   },
   "dependencies": {
     "bignumber.js": "^9.0.1",
     "binance-api-node": "^0.11.11",
     "delay": "^5.0.0",
+    "fs-extra": "^10.0.0",
     "lodash": "^4.17.21",
     "node-cron": "^3.0.0",
     "p-queue": "^6.4.0",
@@ -32,7 +35,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "ts-node src/index.ts",
-    "lint": "eslint --max-warnings=0 'src/**/*.ts'"
+    "start": "yarn build && node dist/index.js",
+    "serve": "yarn build && pm2 start --name binance-dca-bot dist/index.js",
+    "lint": "eslint --max-warnings=0 'src/**/*.ts'",
+    "print-buy-orders": "ts-node src/scripts/printBuyOrders.ts"
   }
 }
